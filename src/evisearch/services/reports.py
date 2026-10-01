@@ -1,0 +1,416 @@
+"""
+comparison_service.py
+
+Load and merge extraction results from multiple methods for display.
+Read-only — no user confirmations or storage.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+from src.config.runtime_paths import RESULTS_ROOT
+
+# Paths to scan for extraction results
+RESULTS_PATHS = {
+    "gemini_native": PROJECT_ROOT / "experiment-scripts" / "baselines_file_search_results" / "gemini_native",
+    "landing_ai_baseline": PROJECT_ROOT / "experiment-scripts" / "baseline_landing_ai_w_gemini" / "results",
+    "landing_ai_baseline_gpt4": PROJECT_ROOT / "experiment-scripts" / "baseline_landing_ai_w_gpt4" / "results",
+    "pipeline": RESULTS_ROOT,
+}
+
+
+def _normalize_gemini_result(col_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert Gemini extraction_metadata format to unified shape."""
+    value = data.get("value", "not found")
+    evidence = data.get("evidence", "")
+    return {
+        "column_name": col_name,
+        "group_name": data.get("group_name", ""),
+        "value": value,
+        "primary_value": value,
+        "found": value not in ("not found", "Not reported", "Not applicable", ""),
+        "page": data.get("page"),
+        "source_type": data.get("source_type") or "text",
+        "candidates": [
+            {
+                "value": value,
+                "evidence": evidence,
+                "assumptions": None,
+                "confidence": "medium",
+            }
+        ],
+        "attribution": {
+            "evidence": evidence,
+            "sources": [],
+            "confidence": "medium",
+            "assumptions": None,
+        },
+    }
+
+
+
+def _load_gemini_native(doc_id: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Load Gemini native results. doc_id can be 'model/pdf_stem' or just pdf_stem."""
+    base = RESULTS_PATHS["gemini_native"]
+    if not base.exists():
+        return None
+    # Try model/pdf_stem or scan for pdf_stem in any model dir
+    parts = doc_id.split("/", 1)
+    if len(parts) == 2:
+        model, pdf_stem = parts
+        path = base / model / pdf_stem / "extraction_metadata.json"
+    else:
+        pdf_stem = doc_id
+        path = None
+        for model_dir in base.iterdir():
+            if model_dir.is_dir():
+                candidate = model_dir / pdf_stem / "extraction_metadata.json"
+                if candidate.exists():
+                    path = candidate
+                    break
+    if not path or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {k: _normalize_gemini_result(k, v) for k, v in data.items() if isinstance(v, dict)}
+    except Exception:
+        return None
+
+
+
+def _expand_attribution_map(attribution_list: list, column_names: set) -> Dict[str, list]:
+    """Inverted map (source -> columns) -> per-column attribution."""
+    col_to_sources: Dict[str, list] = {c: [] for c in column_names}
+    for src in attribution_list or []:
+        if not isinstance(src, dict):
+            continue
+        cols = src.get("columns")
+        if not isinstance(cols, list):
+            continue
+        src_copy = {k: v for k, v in src.items() if k != "columns"}
+        for col in cols:
+            if col in col_to_sources:
+                col_to_sources[col].append(src_copy)
+    return col_to_sources
+
+
+def _load_agent(pdf_stem: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Load agent extractor results. Supports per-column attribution or legacy inverted map."""
+    path = RESULTS_PATHS["pipeline"] / pdf_stem / "agent_extractor" / "extraction_results.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        columns = data.get("columns", {})
+        if not isinstance(columns, dict):
+            return None
+        attribution_map = data.get("attribution")
+        col_to_attr = _expand_attribution_map(attribution_map, set(columns)) if isinstance(attribution_map, list) else {}
+        out = {}
+        for col_name, col_data in columns.items():
+            if isinstance(col_data, dict):
+                v = col_data.get("value", "")
+                evidence = (col_data.get("reasoning") or "").strip()
+                attribution = col_data.get("attribution") if col_data.get("attribution") is not None else col_to_attr.get(col_name, [])
+                # Normalize {page, modality} to include source_type for consumers
+                attribution = [
+                    {**item, "source_type": item.get("source_type") or item.get("modality", "text")}
+                    for item in (attribution or []) if isinstance(item, dict)
+                ]
+                v = str(v) if v is not None else ""
+            else:
+                v = str(col_data) if col_data else ""
+                evidence = ""
+                attribution = col_to_attr.get(col_name, [])
+            out[col_name] = {
+                "column_name": col_name,
+                "group_name": "",
+                "value": v,
+                "primary_value": v,
+                "found": bool(v and v not in ("Not reported", "not found", "Not applicable", "")),
+                "page": None,
+                "source_type": "text",
+                "evidence": evidence,
+                "attribution_snippet": "",
+                "attribution": attribution,
+                "candidates": [{"value": v, "evidence": evidence, "assumptions": None, "confidence": "medium"}],
+            }
+        return out
+    except Exception:
+        return None
+
+
+def _load_search_agent(pdf_stem: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Load search agent results. Same format as agent for attribution fallback."""
+    path = RESULTS_PATHS["pipeline"] / pdf_stem / "search_agent" / "extraction_results.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        columns = data.get("columns", {})
+        if not isinstance(columns, dict):
+            return None
+        out = {}
+        for col_name, col_data in columns.items():
+            if isinstance(col_data, dict):
+                v = col_data.get("value", "")
+                evidence = (col_data.get("reasoning") or "").strip()
+                attribution = col_data.get("attribution") or []
+                attribution = [
+                    {**item, "source_type": item.get("source_type") or item.get("modality", "text")}
+                    for item in attribution if isinstance(item, dict)
+                ]
+                v = str(v) if v is not None else ""
+            else:
+                v = str(col_data) if col_data else ""
+                evidence = ""
+                attribution = []
+            out[col_name] = {
+                "column_name": col_name,
+                "group_name": "",
+                "value": v,
+                "primary_value": v,
+                "found": bool(v and v not in ("Not reported", "not found", "Not applicable", "")),
+                "page": None,
+                "source_type": "text",
+                "evidence": evidence,
+                "attribution_snippet": "",
+                "attribution": attribution,
+                "candidates": [{"value": v, "evidence": evidence, "assumptions": None, "confidence": "medium"}],
+            }
+        return out
+    except Exception:
+        return None
+
+
+
+def _load_reconciliation_agent(pdf_stem: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Load reconciliation agent final results."""
+    path = RESULTS_PATHS["pipeline"] / pdf_stem / "reconciliation_agent" / "reconciled_results.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        columns = data.get("columns", {})
+        if not isinstance(columns, dict):
+            return None
+        out = {}
+        for col_name, col_data in columns.items():
+            if isinstance(col_data, dict):
+                v = col_data.get("value", "")
+                evidence = (col_data.get("reasoning") or col_data.get("verification") or "").strip()
+                attribution = col_data.get("attribution") or []
+                attribution = [
+                    {**item, "source_type": item.get("source_type") or item.get("modality", "text")}
+                    for item in attribution if isinstance(item, dict)
+                ]
+                v = str(v) if v is not None else ""
+            else:
+                v = str(col_data) if col_data else ""
+                evidence = ""
+                attribution = []
+            out[col_name] = {
+                "column_name": col_name,
+                "group_name": "",
+                "value": v,
+                "primary_value": v,
+                "found": bool(v and v not in ("Not reported", "not found", "Not applicable", "")),
+                "page": None,
+                "source_type": "text",
+                "evidence": evidence,
+                "attribution_snippet": "",
+                "attribution": attribution,
+                "candidates": [{"value": v, "evidence": evidence, "assumptions": None, "confidence": "medium"}],
+            }
+        return out
+    except Exception:
+        return None
+
+
+def _load_landing_ai_baseline(pdf_stem: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Load baseline_landing_ai_w_gemini results."""
+    return _load_landing_ai_style_baseline(RESULTS_PATHS["landing_ai_baseline"], pdf_stem)
+
+
+def _load_landing_ai_baseline_gpt4(pdf_stem: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Load baseline_landing_ai_w_gpt4 results."""
+    return _load_landing_ai_style_baseline(RESULTS_PATHS["landing_ai_baseline_gpt4"], pdf_stem)
+
+
+def _load_landing_ai_style_baseline(base: Path, pdf_stem: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Load extraction_metadata.json from a baseline (structure: base/model/pdf_stem/)."""
+    if not base.exists():
+        return None
+    # Structure: results/gemini-2.5-flash/pdf_stem/extraction_metadata.json or results/gpt-4.1/pdf_stem/
+    for model_dir in base.iterdir():
+        if model_dir.is_dir():
+            path = model_dir / pdf_stem / "extraction_metadata.json"
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    return {k: _normalize_gemini_result(k, v) for k, v in data.items() if isinstance(v, dict)}
+                except Exception:
+                    pass
+    return None
+
+
+def get_document_status(pdf_stem: str) -> Dict[str, bool]:
+    """Return which methods have results for this document."""
+    return {
+        "gemini_native": _load_gemini_native(pdf_stem) is not None,
+        "landing_ai_baseline": _load_landing_ai_baseline(pdf_stem) is not None,
+        "landing_ai_baseline_gpt4": _load_landing_ai_baseline_gpt4(pdf_stem) is not None,
+        "agent": _load_agent(pdf_stem) is not None,
+        "search_agent": _load_search_agent(pdf_stem) is not None,
+        "reconciliation_agent": _load_reconciliation_agent(pdf_stem) is not None,
+    }
+
+
+def load_comparison_data(pdf_stem: str) -> Dict[str, Any]:
+    """
+    Load and merge results from all available methods.
+    Returns unified structure for comparison view.
+    """
+    methods: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    all_columns: set[str] = set()
+
+    # Gemini native
+    gemini = _load_gemini_native(pdf_stem)
+    if gemini:
+        methods["gemini_native"] = gemini
+        all_columns.update(gemini.keys())
+
+    # Landing AI baseline (Gemini)
+    la_baseline = _load_landing_ai_baseline(pdf_stem)
+    if la_baseline:
+        methods["landing_ai_baseline"] = la_baseline
+        all_columns.update(la_baseline.keys())
+
+    # Landing AI baseline (GPT-4)
+    la_baseline_gpt4 = _load_landing_ai_baseline_gpt4(pdf_stem)
+    if la_baseline_gpt4:
+        methods["landing_ai_baseline_gpt4"] = la_baseline_gpt4
+        all_columns.update(la_baseline_gpt4.keys())
+
+    # Agent extractor
+    agent = _load_agent(pdf_stem)
+    if agent:
+        methods["agent"] = agent
+        all_columns.update(agent.keys())
+
+    # Search agent
+    search_agent = _load_search_agent(pdf_stem)
+    if search_agent:
+        methods["search_agent"] = search_agent
+        all_columns.update(search_agent.keys())
+
+    # Reconciliation agent
+    reconciliation_agent = _load_reconciliation_agent(pdf_stem)
+    if reconciliation_agent:
+        methods["reconciliation_agent"] = reconciliation_agent
+        all_columns.update(reconciliation_agent.keys())
+
+    # Build comparison rows: one per column, with values per method
+    columns_sorted = sorted(all_columns)
+    comparison_rows: List[Dict[str, Any]] = []
+    for col_name in columns_sorted:
+        row: Dict[str, Any] = {
+            "column_name": col_name,
+            "group_name": "",
+            "methods": {},
+        }
+        for method_name, method_data in methods.items():
+            col_data = method_data.get(col_name)
+            if col_data:
+                row["group_name"] = row["group_name"] or col_data.get("group_name", "")
+                row["methods"][method_name] = col_data
+        comparison_rows.append(row)
+
+    # Group-wise view: group columns by group_name
+    by_group: Dict[str, List[Dict[str, Any]]] = {}
+    for r in comparison_rows:
+        g = r.get("group_name") or "Other"
+        if g not in by_group:
+            by_group[g] = []
+        by_group[g].append(r)
+
+    return {
+        "pdf_stem": pdf_stem,
+        "methods_available": list(methods.keys()),
+        "status": get_document_status(pdf_stem),
+        "total_columns": len(columns_sorted),
+        "comparison": comparison_rows,
+        "by_group": by_group,
+        "method_results": methods,
+    }
+
+
+def list_documents() -> List[Dict[str, Any]]:
+    """
+    List all documents that have extraction results from any method.
+    Returns list of {doc_id, pdf_stem, status, methods_available}.
+    """
+    seen: Dict[str, Dict[str, bool]] = {}
+    pdf_stems: set[str] = set()
+
+    # From new_pipeline_outputs/results
+    pipeline_base = RESULTS_PATHS["pipeline"]
+    if pipeline_base.exists():
+        for doc_dir in pipeline_base.iterdir():
+            if doc_dir.is_dir():
+                pdf_stems.add(doc_dir.name)
+
+    # From gemini_native
+    gemini_base = RESULTS_PATHS["gemini_native"]
+    if gemini_base.exists():
+        for model_dir in gemini_base.iterdir():
+            if model_dir.is_dir():
+                for doc_dir in model_dir.iterdir():
+                    if doc_dir.is_dir():
+                        pdf_stems.add(doc_dir.name)
+
+    # From LandingAI baselines
+    for baseline_key in ("landing_ai_baseline", "landing_ai_baseline_gpt4"):
+        baseline_base = RESULTS_PATHS[baseline_key]
+        if baseline_base.exists():
+            for model_dir in baseline_base.iterdir():
+                if model_dir.is_dir():
+                    for doc_dir in model_dir.iterdir():
+                        if doc_dir.is_dir():
+                            pdf_stems.add(doc_dir.name)
+
+    documents = []
+    for stem in sorted(pdf_stems):
+        status = get_document_status(stem)
+        methods_available = [k for k, v in status.items() if v]
+        if methods_available:
+            documents.append({
+                "doc_id": stem,
+                "pdf_stem": stem,
+                "status": status,
+                "methods_available": methods_available,
+            })
+    return documents
+
+
+def get_report(pdf_stem: str) -> Dict[str, Any]:
+    """Generate document analysis report (summary stats)."""
+    data = load_comparison_data(pdf_stem)
+    methods = data.get("method_results", {})
+    report: Dict[str, Any] = {
+        "pdf_stem": pdf_stem,
+        "methods_available": data.get("methods_available", []),
+        "total_columns": data.get("total_columns", 0),
+        "by_method": {},
+    }
+    for method_name, method_data in methods.items():
+        found = sum(1 for c in method_data.values() if c.get("found"))
+        report["by_method"][method_name] = {
+            "total": len(method_data),
+            "found": found,
+            "not_found": len(method_data) - found,
+        }
+    return report

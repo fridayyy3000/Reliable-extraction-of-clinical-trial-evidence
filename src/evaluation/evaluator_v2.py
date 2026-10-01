@@ -1,0 +1,550 @@
+"""
+Evaluation framework with category-aware scoring.
+Supports: exact_match, numeric_tolerance, structured_text
+Returns: correctness, completeness, overall scores per column
+
+The judge model comes from the "judge" role in src/config/config.py.
+
+  python -m src.evaluation.evaluator_v2 EXTRACTION_JSON DOCUMENT_NAME OUTPUT_DIR [--model gemini-2.5-pro]
+"""
+import argparse
+import json
+import sys
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import pandas as pd
+from pydantic import BaseModel, Field, ValidationError
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from src.config.config import DEFINITIONS_EVAL_CATEGORY_PATH, GOLD_TABLE_JSON_PATH, MAX_TOKENS
+from src.inference import InferenceError, Message, get_chat
+from src.inference.factory import model_key_for
+from src.utils.costing import aggregate_usage, usage_to_cost_dict
+from src.utils.logging_utils import setup_logger
+
+logger = setup_logger("evaluator_v2")
+
+JSON_INSTRUCTIONS = (
+    "\n\nRespond with a single JSON object containing a \"results\" array. Each element must have: "
+    "\"column\" (exact column name), \"correctness\" (0.0, 0.5, or 1.0), \"completeness\" (0.0, 0.5, or 1.0), "
+    "\"reason\" (brief explanation)."
+)
+
+
+class ColumnEvaluationResult(BaseModel):
+    """Schema for individual column evaluation result."""
+    column: str = Field(..., description="The EXACT column name as provided, without any numbering prefix")
+    correctness: float
+    completeness: float
+    reason: str
+
+
+class EvaluationResults(BaseModel):
+    """Schema for batch evaluation results."""
+    results: list[ColumnEvaluationResult]
+
+
+class EvaluatorV2:
+    def __init__(
+        self,
+        extraction_file: str,
+        ground_truth_file: str,
+        definitions_file: str,
+        document_name: str,
+        output_dir: str,
+        model: Optional[str] = None,
+    ):
+        self.extraction_file = Path(extraction_file)
+        self.ground_truth_file = Path(ground_truth_file)
+        self.definitions_file = Path(definitions_file)
+        self.document_name = document_name if document_name.endswith('.pdf') else f"{document_name}.pdf"
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Judge model (created on first use, so load_data works without credentials)
+        self.judge_model = model_key_for("judge", model)
+        self._judge = None
+
+        # Data storage
+        self.predicted_values = {}
+        self.ground_truth_values = {}
+        self.column_categories = {}
+        self.column_definitions = {}
+        self.column_labels = {}
+        self.results = {}
+        self.llm_logs = {"judge": []}
+
+    @property
+    def judge(self):
+        if self._judge is None:
+            self._judge = get_chat("judge", self.judge_model)
+        return self._judge
+
+    def load_data(self):
+        """Load all input data."""
+        logger.info("Loading extraction data...")
+        with open(self.extraction_file, 'r') as f:
+            extraction_data = json.load(f)
+            # Extract values from nested structure
+            for col_name, col_data in extraction_data.items():
+                if isinstance(col_data, dict) and 'value' in col_data:
+                    # Convert None to empty string for consistency
+                    self.predicted_values[col_name] = col_data['value'] if col_data['value'] is not None else ""
+                else:
+                    self.predicted_values[col_name] = col_data if col_data is not None else ""
+
+        logger.info("Loading ground truth...")
+        with open(self.ground_truth_file, 'r') as f:
+            gt_data = json.load(f)
+            # Find matching document
+            for row in gt_data['data']:
+                doc_name_cell = row.get('Document Name', {})
+                if doc_name_cell.get('value') == self.document_name:
+                    # Extract values from all columns
+                    for col_name, cell_data in row.items():
+                        self.ground_truth_values[col_name] = cell_data.get('value', '')
+                    break
+
+        if not self.ground_truth_values:
+            raise ValueError(f"No ground truth found for document: {self.document_name}")
+
+        logger.info("Loading column categories, labels, and definitions...")
+        df = pd.read_csv(self.definitions_file)
+        self.column_categories = dict(zip(df['Column Name'], df['eval_category']))
+        self.column_labels = dict(zip(df['Column Name'], df['Label']))
+        if 'Definition' in df.columns:
+            self.column_definitions = dict(zip(df['Column Name'], df['Definition']))
+        else:
+            self.column_definitions = {col: "" for col in df['Column Name']}
+
+        logger.info(f"Loaded {len(self.predicted_values)} predicted values")
+        logger.info(f"Loaded {len(self.ground_truth_values)} ground truth values")
+        logger.info(f"Loaded {len(self.column_categories)} column categories")
+        logger.info(f"Loaded {len(self.column_definitions)} column definitions")
+
+    def group_columns_by_category(self) -> Dict[str, List[str]]:
+        """Group columns by their evaluation category."""
+        grouped = {
+            'exact_match': [],
+            'numeric_tolerance': [],
+            'structured_text': []
+        }
+
+        # Only evaluate columns that exist in both predicted and GT
+        common_columns = set(self.predicted_values.keys()) & set(self.ground_truth_values.keys())
+
+        for col in common_columns:
+            category = self.column_categories.get(col)
+            if category in grouped:
+                grouped[category].append(col)
+
+        logger.info(f"Grouped columns: exact_match={len(grouped['exact_match'])}, "
+                   f"numeric_tolerance={len(grouped['numeric_tolerance'])}, "
+                   f"structured_text={len(grouped['structured_text'])}")
+
+        return grouped
+
+    def create_batches_by_label(self, columns: List[str], batch_size: int = 6) -> List[List[str]]:
+        """
+        Create batches keeping columns with the same label together.
+        For numeric_tolerance columns, group by label first, then batch within each group.
+        """
+        # Group columns by their label
+        label_groups = defaultdict(list)
+        for col in columns:
+            label = self.column_labels.get(col, col)
+            label_groups[label].append(col)
+
+        # Create batches
+        batches = []
+        for label, cols in sorted(label_groups.items()):
+            # Split this label group into batches
+            for i in range(0, len(cols), batch_size):
+                batch = cols[i:i + batch_size]
+                batches.append(batch)
+
+        return batches
+
+    def create_batches(self, columns: List[str], batch_size: int = 6) -> List[List[str]]:
+        """Split columns into batches (simple sequential split)."""
+        batches = []
+        for i in range(0, len(columns), batch_size):
+            batches.append(columns[i:i + batch_size])
+        return batches
+
+    def build_prompt(self, category: str, columns: List[str]) -> str:
+        """Build category-specific evaluation prompt."""
+
+        if category == 'exact_match':
+            prompt = """You are evaluating clinical trial data extraction for exact match columns (identifiers, categorical values, binary fields).
+
+Compare Ground Truth (GT) vs Predicted (Pred) values for exact/semantic equivalence.
+
+CRITICAL - Empty / missing (use for BOTH GT and Pred):
+- Treat as equivalent to empty: "", "Not reported", "not reported", "not found", "Not found", "not applicable", "N/A", "na", "NaN", "not present", "Not reported", "Not applicable"
+- When GT is empty and Pred is any of the above → correctness=1.0, completeness=1.0 (no hallucination)
+- When GT is empty and Pred has a substantive value → correctness=0.0, completeness=0.0 (hallucination)
+- When GT has a value and Pred is empty → correctness=0.0, completeness=0.0 (missing extraction)
+
+Rules:
+- Case-insensitive comparison
+- Accept synonyms: "Yes"/"Y", "No"/"N", "Full Pub"/"Full Publication", "Phase 3"/"3.0", etc.
+- For identifiers (NCT, Trial Name): must match exactly (ignoring case/whitespace)
+- Consider the column definition to understand acceptable variations
+
+For each column, evaluate:
+- If values are equivalent (by rules above): correctness=1.0, completeness=1.0
+- If values differ: correctness=0.0, completeness=0.0
+
+Columns to evaluate:\n"""
+
+        elif category == 'numeric_tolerance':
+            prompt = """You are evaluating clinical trial data extraction for numeric columns.
+
+Compare Ground Truth (GT) vs Predicted (Pred) values using the column Definition to determine what is required.
+
+CRITICAL RULES:
+
+1) **What's required vs optional (check the Definition)**:
+   - If definition says "include count AND percentage" or "N (%)": both the count (N) and the percentage numeric value are REQUIRED. The literal "%" symbol is OPTIONAL—e.g. Pred="103 (55)" has both N and percentage value; do NOT dock for missing "%".
+   - If definition says "at X years" or "X-year rate": the timepoint is REQUIRED.
+   - If definition says "median" without specifying CI/IQR: only the median number is required; CI, IQR, SD, range, p-values are OPTIONAL context.
+   - **Multiple values in GT**: If GT contains multiple distinct required values (e.g. "bPFS 12.9 mo; rPFS 15.3 mo" or "X and Y"), pred must include ALL of them for completeness=1.0. If pred reports only one value and GT has two or more, score correctness based on whether the reported value matches one in GT, but set completeness=0.5 (missing other required value(s)).
+   - Default: primary numbers are required; statistical context (CI, IQR, p-values) is optional unless definition explicitly asks for it.
+
+2) **Tolerance**: ±0.1 for absolute values, ±2% relative for percentages.
+
+3) **Correctness** (use only 0.0, 0.5, or 1.0):
+   - 1.0 = all predicted numbers match GT numbers (within tolerance); extra optional stats (IQR, CI) in pred are fine
+   - 0.5 = some predicted numbers match, some don't or contradict GT
+   - 0.0 = no predicted numbers match GT, or predicted numbers contradict GT
+
+4) **Completeness** (use only 0.0, 0.5, or 1.0):
+   - 1.0 = all REQUIRED numbers from GT are present in pred (check definition to determine what's required)
+   - 0.5 = some required numbers present, some missing
+   - 0.0 = required numbers missing
+
+5) **Empty handling** (treat as empty for BOTH GT and Pred):
+   - Empty-equivalent: "", "Not reported", "not found", "Not found", "not applicable", "N/A", "na", "NaN", "not present"
+   - When GT is empty and Pred is empty-equivalent → correctness=1.0, completeness=1.0 (no hallucination)
+   - When GT is empty and Pred has a number or substantive value → correctness=0.0, completeness=0.0 (hallucination)
+   - When GT has a value and Pred is empty-equivalent → correctness=0.0, completeness=0.0 (missing extraction)
+   - When both have substantive values: apply tolerance and required-vs-optional rules above
+
+EXAMPLES:
+- GT="35.1 months (95% CI 29.9–43.6)", Pred="35.1 months", Def="median OS" → correctness=1.0 (35.1 matches), completeness=1.0 (CI is optional)
+- GT="70% at 5 years", Pred="70%", Def="OS rate at 5 years" → correctness=1.0 (70% matches), completeness=0.5 (missing required timepoint)
+- GT="250 (63.6%)", Pred="250", Def="include count and percentage" → correctness=1.0 (N matches), completeness=0.5 (missing percentage value)
+- GT="103 (55%)", Pred="103 (55)", Def="include count and percentage" → correctness=1.0, completeness=1.0 (both N and percentage value present; "%" symbol optional)
+- GT="250 (63.6%)", Pred="250 (64%)", Def="include count and percentage" → correctness=1.0 (both within tolerance), completeness=1.0 (both present)
+- GT="High-volume: 92 (48%) Low-volume: 100 (52%)", Pred="92 (48%)", Def="by volume subgroup" → correctness=1.0 (high-volume matches), completeness=0.5 (missing low-volume)
+- GT="bPFS 12.9 mo; rPFS 15.3 mo", Pred="12.9 mo", Def="median PFS (months)" → correctness=1.0 (12.9 matches), completeness=0.5 (missing rPFS 15.3)
+- GT="bPFS 12.9 mo; rPFS 15.3 mo", Pred="12.9 mo; 15.3 mo" or "bPFS 12.9; rPFS 15.3", Def="median PFS" → correctness=1.0, completeness=1.0 (both values present)
+
+Columns to evaluate:\n"""
+
+        else:  # structured_text
+            prompt = """You are evaluating clinical trial data extraction for structured text columns (treatments, regimens, endpoints, classifications).
+
+Compare Ground Truth (GT) vs Predicted (Pred) for semantic information content using the column Definition to determine what is required.
+
+CRITICAL RULES:
+
+1) **Correctness = no contradiction** (use only 0.0, 0.5, or 1.0):
+   - 1.0 = all information in Pred matches or is compatible with GT; extra correct detail (e.g., drug mechanism, trial name, expanded abbreviations) is fine and does NOT lower the score
+   - 0.5 = some predicted info correct, some contradicts GT (mixed: core fact right but extra detail wrong)
+   - 0.0 = predicted info contradicts GT or core facts are wrong
+
+2) **Completeness = required facts only** (use only 0.0, 0.5, or 1.0):
+   - Use the Definition to identify what information is REQUIRED for this column
+   - For "treatment regimen": drug name and combination partner (e.g., ADT) are typically required; dose and schedule are required if definition implies detail (e.g., "describe the regimen") but optional if definition just asks "what treatment"
+   - For "endpoint": endpoint name is required; timepoints/thresholds are required only if definition specifies
+   - Use medical judgment based on the definition to decide what's required vs optional context
+   - 1.0 = all required facts from GT are present in pred
+   - 0.5 = some required facts present, some missing
+   - 0.0 = required facts missing
+   - Do NOT penalize for missing optional context (mechanism, rationale, historical notes, expanded forms)
+
+3) **Empty handling** (treat as empty for BOTH GT and Pred):
+   - Empty-equivalent: "", "Not reported", "not found", "Not found", "not applicable", "N/A", "na", "not present"
+   - When GT is empty and Pred is empty-equivalent → correctness=1.0, completeness=1.0 (no hallucination)
+   - When GT is empty and Pred has substantive text → correctness=0.0, completeness=0.0 (hallucination)
+   - When GT has a value and Pred is empty-equivalent → correctness=0.0, completeness=0.0 (missing extraction)
+
+4) **General**:
+   - Be lenient with abbreviations (e.g., "ADT" = "Androgen Deprivation Therapy")
+   - Accept rephrasing if meaning is preserved
+
+EXAMPLES:
+- GT="ADT", Pred="ADT (LHRH agonist for testosterone suppression)", Def="control arm regimen" → correctness=1.0 (extra mechanism is fine, no contradiction), completeness=1.0 (core fact "ADT" present)
+- GT="Docetaxel 75 mg/m² every 21 days + ADT", Pred="Docetaxel + ADT", Def="treatment regimen (describe)" → correctness=1.0 (no contradiction), completeness=0.5 (missing dose/schedule which are required by "describe")
+- GT="ADT", Pred="ADT with docetaxel", Def="control arm" → correctness=0.5 (ADT correct but extra "docetaxel" contradicts), completeness=1.0 (ADT present)
+- GT="Overall survival", Pred="Overall survival at 3 years", Def="primary endpoint" → correctness=1.0 (extra timepoint is fine), completeness=1.0 (endpoint name present)
+
+Columns to evaluate:\n"""
+
+        # Add column comparisons with definitions
+        for i, col in enumerate(columns, 1):
+            gt_val = self.ground_truth_values.get(col, "")
+            pred_val = self.predicted_values.get(col, "")
+            definition = self.column_definitions.get(col, "")
+
+            prompt += f"{i}. {col}:\n"
+            prompt += f"   Definition: {definition}\n"
+            prompt += f"   GT: {gt_val}\n"
+            prompt += f"   Pred: {pred_val}\n\n"
+
+        prompt += """\nFor each column, provide your evaluation with reasoning, then output the final scores.
+Be thorough in your reasoning but concise.
+
+IMPORTANT: When returning results, use the EXACT column name shown above (without the number prefix).
+For example, if the column is shown as "1. Control Arm - N:", you must return column name as "Control Arm - N"."""
+
+        return prompt
+
+    def evaluate_batch(self, category: str, columns: List[str], max_retries: int = 3) -> List[Dict]:
+        """Evaluate a batch of columns with the judge model and structured JSON output."""
+        logger.info(f"Evaluating batch of {len(columns)} columns in category '{category}' with {self.judge_model}")
+        prompt = self.build_prompt(category, columns) + JSON_INSTRUCTIONS
+        schema = EvaluationResults.model_json_schema()
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            response_text = None
+            try:
+                result = self.judge.chat([Message.user(prompt)], response_schema=schema, max_tokens=MAX_TOKENS["judge"])
+                response_text = result.text
+                validated = EvaluationResults.model_validate(result.json())
+                self.llm_logs["judge"].append({
+                    "timestamp": datetime.now().isoformat(),
+                    "model": self.judge_model,
+                    "category": category,
+                    "columns": columns,
+                    "prompt": prompt,
+                    "response": response_text,
+                    "success": True,
+                    "input_tokens": result.usage.input_tokens,
+                    "output_tokens": result.usage.output_tokens,
+                })
+                return validated.model_dump()["results"]
+            except (InferenceError, ValueError, ValidationError) as exc:
+                last_error = exc
+                logger.warning(f"Judge attempt {attempt}/{max_retries} failed: {exc}")
+                self.llm_logs["judge"].append({
+                    "timestamp": datetime.now().isoformat(),
+                    "model": self.judge_model,
+                    "category": category,
+                    "columns": columns,
+                    "prompt": prompt,
+                    "response": response_text,
+                    "success": False,
+                    "error": str(exc),
+                })
+        return [{"column": col, "correctness": 0.0, "completeness": 0.0, "reason": f"Evaluation failed: {last_error}"} for col in columns]
+
+    def evaluate_all(self, max_workers=5):
+        """Run evaluation on all columns with parallel processing."""
+        logger.info("Starting evaluation...")
+
+        # Group columns by category
+        grouped = self.group_columns_by_category()
+
+        # Collect all batch tasks
+        all_tasks = []
+
+        for category, columns in grouped.items():
+            if not columns:
+                logger.info(f"No columns in category '{category}', skipping")
+                continue
+
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Evaluating category: {category} ({len(columns)} columns)")
+            logger.info(f"{'='*60}")
+
+            # Determine batch size and batching strategy
+            if category == 'exact_match':
+                batch_size = len(columns)  # Single batch
+                batches = self.create_batches(columns, batch_size)
+            elif category == 'numeric_tolerance':
+                batch_size = 6
+                # Use label-based batching to keep related columns together
+                batches = self.create_batches_by_label(columns, batch_size)
+            else:  # structured_text
+                batch_size = 6
+                batches = self.create_batches(columns, batch_size)
+
+            logger.info(f"Created {len(batches)} batches")
+
+            # Add tasks
+            for i, batch in enumerate(batches, 1):
+                all_tasks.append({
+                    'category': category,
+                    'batch': batch,
+                    'batch_num': i,
+                    'total_batches': len(batches)
+                })
+
+        # Process batches in parallel
+        logger.info(f"\n🚀 Processing {len(all_tasks)} batches with {max_workers} workers...")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_task = {
+                executor.submit(self.evaluate_batch, task['category'], task['batch']): task
+                for task in all_tasks
+            }
+
+            # Collect results as they complete
+            completed = 0
+            for future in as_completed(future_to_task):
+                task = future_to_task[future]
+                completed += 1
+
+                try:
+                    batch_results = future.result()
+
+                    logger.info(f"✓ [{completed}/{len(all_tasks)}] Completed {task['category']} batch {task['batch_num']}/{task['total_batches']}")
+
+                    # Store results with full context (thread-safe as we're collecting sequentially)
+                    for result in batch_results:
+                        # Get the column name and strip trailing colon (added in prompt for readability)
+                        col_name = result['column'].rstrip(':').strip()
+                        self.results[col_name] = {
+                            'correctness': result['correctness'],
+                            'completeness': result['completeness'],
+                            'overall': (result['correctness'] + result['completeness']) / 2,
+                            'reason': result['reason'],
+                            'category': task['category'],
+                            'definition': self.column_definitions.get(col_name, ""),
+                            'ground_truth': self.ground_truth_values.get(col_name, ""),
+                            'predicted': self.predicted_values.get(col_name, "")
+                        }
+
+                except Exception as e:
+                    logger.error(f"✗ [{completed}/{len(all_tasks)}] Failed {task['category']} batch {task['batch_num']}: {e}")
+
+        logger.info(f"\n✅ Evaluation complete: {len(self.results)} columns evaluated")
+
+    def aggregate_metrics(self) -> Dict:
+        """Aggregate results into summary metrics."""
+        if not self.results:
+            return {}
+
+        # Overall metrics
+        all_correctness = [r['correctness'] for r in self.results.values()]
+        all_completeness = [r['completeness'] for r in self.results.values()]
+        all_overall = [r['overall'] for r in self.results.values()]
+
+        summary = {
+            'overall': {
+                'avg_correctness': sum(all_correctness) / len(all_correctness),
+                'avg_completeness': sum(all_completeness) / len(all_completeness),
+                'avg_overall': sum(all_overall) / len(all_overall),
+                'total_columns': len(self.results)
+            },
+            'by_category': {},
+            'judge_model': self.judge_model,
+        }
+
+        # Per-category metrics
+        for category in ['exact_match', 'numeric_tolerance', 'structured_text']:
+            cat_results = {k: v for k, v in self.results.items() if v['category'] == category}
+            if cat_results:
+                cat_correctness = [r['correctness'] for r in cat_results.values()]
+                cat_completeness = [r['completeness'] for r in cat_results.values()]
+                cat_overall = [r['overall'] for r in cat_results.values()]
+
+                summary['by_category'][category] = {
+                    'avg_correctness': sum(cat_correctness) / len(cat_correctness),
+                    'avg_completeness': sum(cat_completeness) / len(cat_completeness),
+                    'avg_overall': sum(cat_overall) / len(cat_overall),
+                    'column_count': len(cat_results)
+                }
+
+        return summary
+
+    def save_results(self):
+        """Save all outputs."""
+        logger.info("Saving results...")
+
+        # Create llm_logs directory
+        logs_dir = self.output_dir / "llm_logs"
+        logs_dir.mkdir(exist_ok=True)
+
+        # 1. evaluation_results.json
+        results_output = {
+            'document_name': self.document_name,
+            'evaluation_timestamp': datetime.now().isoformat(),
+            'judge_model': self.judge_model,
+            'columns': self.results
+        }
+        with open(self.output_dir / 'evaluation_results.json', 'w') as f:
+            json.dump(results_output, f, indent=2)
+        logger.info(f"✅ Saved evaluation_results.json")
+
+        # 2. summary_metrics.json
+        summary = self.aggregate_metrics()
+        with open(self.output_dir / 'summary_metrics.json', 'w') as f:
+            json.dump(summary, f, indent=2)
+        logger.info(f"✅ Saved summary_metrics.json")
+
+        # 3. LLM logs
+        with open(logs_dir / 'judge_calls.jsonl', 'w') as f:
+            for log in self.llm_logs['judge']:
+                f.write(json.dumps(log) + '\n')
+        logger.info(f"✅ Saved judge_calls.jsonl ({len(self.llm_logs['judge'])} calls)")
+
+        # Print summary
+        logger.info(f"\n{'='*60}")
+        logger.info("EVALUATION SUMMARY")
+        logger.info(f"{'='*60}")
+        if summary and 'overall' in summary:
+            logger.info(f"Overall Correctness: {summary['overall']['avg_correctness']:.3f}")
+            logger.info(f"Overall Completeness: {summary['overall']['avg_completeness']:.3f}")
+            logger.info(f"Overall Score: {summary['overall']['avg_overall']:.3f}")
+            logger.info(f"\nBy Category:")
+            for cat, metrics in summary.get('by_category', {}).items():
+                logger.info(f"  {cat}: {metrics['avg_overall']:.3f} ({metrics['column_count']} cols)")
+        else:
+            logger.warning("No results to summarize")
+
+    def run(self):
+        """Main execution pipeline."""
+        try:
+            self.load_data()
+            self.evaluate_all()
+            self.save_results()
+            return self.results
+        except Exception as e:
+            logger.error(f"Evaluation failed: {e}", exc_info=True)
+            raise
+
+    def get_usage(self) -> dict:
+        """Aggregate judge token usage and cost (catalog prices)."""
+        items = [
+            {"input_tokens": log.get("input_tokens", 0), "output_tokens": log.get("output_tokens", 0), "model": self.judge_model}
+            for log in self.llm_logs.get("judge", [])
+            if log.get("input_tokens") or log.get("output_tokens")
+        ]
+        return aggregate_usage(items) if items else usage_to_cost_dict(self.judge_model, 0, 0)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Score an extraction_metadata.json against the gold table")
+    parser.add_argument("extraction_file")
+    parser.add_argument("document_name", help="PDF name as it appears in the gold table (with or without .pdf)")
+    parser.add_argument("output_dir")
+    parser.add_argument("--ground-truth", default=str(GOLD_TABLE_JSON_PATH))
+    parser.add_argument("--definitions", default=str(DEFINITIONS_EVAL_CATEGORY_PATH))
+    parser.add_argument("--model", help="Catalog model key overriding the judge role")
+    args = parser.parse_args(argv)
+    EvaluatorV2(args.extraction_file, args.ground_truth, args.definitions, args.document_name, args.output_dir, model=args.model).run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

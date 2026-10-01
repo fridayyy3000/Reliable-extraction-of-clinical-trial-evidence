@@ -1,0 +1,514 @@
+# EviSearch inference catalog: every option that exists.
+#
+# This file lists what CAN be used: endpoints, models (and what each supports), the pipeline roles
+# (and what each needs), local vLLM servers, presets and enumerated options.
+# What a run DOES use is selected in src/config/config.py and validated against this file on import.
+#
+#   python -m src.config           # show options and the current selection
+#   python -m src.config --check   # also check credentials and local server health
+#
+# Prices are approximate USD per 1K tokens; update them when provider pricing changes.
+
+endpoints:
+  # Local vLLM servers (OpenAI-compatible API). The base URL comes from the server's host/port;
+  # set the *_URL environment variable to point at a server running somewhere else.
+  vllm_chat:
+    type: openai_compatible
+    server: qwen36_27b
+    base_url_env: EVISEARCH_VLLM_CHAT_URL
+  vllm_chat_small:
+    type: openai_compatible
+    server: qwen3_8b
+    base_url_env: EVISEARCH_VLLM_CHAT_SMALL_URL
+  vllm_chat_mistral:
+    type: openai_compatible
+    server: mistral_small_24b
+    base_url_env: EVISEARCH_VLLM_CHAT_MISTRAL_URL
+  vllm_chat_gemma:
+    type: openai_compatible
+    server: gemma4_31b
+    base_url_env: EVISEARCH_VLLM_CHAT_GEMMA_URL
+  vllm_chat_llama4:
+    type: openai_compatible
+    server: llama4_scout
+    base_url_env: EVISEARCH_VLLM_CHAT_LLAMA4_URL
+  vllm_embed:
+    type: openai_compatible
+    server: qwen3_embed_8b
+    base_url_env: EVISEARCH_VLLM_EMBED_URL
+  vllm_rerank:
+    type: vllm_rerank
+    server: qwen3_rerank_8b
+    base_url_env: EVISEARCH_VLLM_RERANK_URL
+
+  # Cloud APIs
+  openai:
+    type: openai_compatible
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+  # Serverless open-weight hosts (OpenAI-compatible HTTP). They exist for one reason: many requests in flight at once,
+  # which one shared vLLM instance (--max-num-seqs 8, other tenants on the same GPU) cannot give. Nothing below has
+  # been verified against a provider account: check the base URL against the provider's current API docs, and read the
+  # comments on the model entries before the first run. Neither endpoint declares base_url_env on purpose - setting one
+  # makes check_selection() probe GET <base>/health, which is a local-vLLM route, so `--check` would report a public
+  # provider as "not reachable".
+  novita:
+    type: openai_compatible
+    base_url: https://api.novita.ai/v3/openai   # UNVERIFIED: take the current OpenAI-compatible base URL from Novita's docs
+    api_key_env: NOVITA_API_KEY
+    timeout_s: 900      # a queued request on shared capacity can be slow to start decoding; Arm A decodes ~2k tokens
+    max_retries: 4      # shared capacity answers 429/5xx under load; the OpenAI SDK retries those with backoff
+  together:
+    type: openai_compatible
+    base_url: https://api.together.xyz/v1       # UNVERIFIED: take the current OpenAI-compatible base URL from Together's docs
+    api_key_env: TOGETHER_API_KEY
+    timeout_s: 900
+    max_retries: 4
+
+  # OpenRouter: one key for the hosted open-weight models the pipeline uses, so the same three agents and the same
+  # embedding model run without a GPU. The routing rules sit on each model entry (extra_body).
+  openrouter:
+    type: openai_compatible
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPEN_ROUTER_API_KEY
+    timeout_s: 900      # a long Arm A call over a whole paper with page images can take minutes on shared capacity
+    max_retries: 4      # 429/5xx from a busy provider are retried with backoff by the OpenAI SDK
+
+  vertex:
+    type: gemini
+    api_key_env: VERTEX_API_KEY          # local development
+    project_env: GOOGLE_CLOUD_PROJECT    # ADC / service-account auth
+    location_env: GOOGLE_CLOUD_LOCATION
+    default_location: us-central1
+    timeout_s: 300
+
+  vertex_embedding:
+    type: vertex_embedding
+    base_url_env: EVISEARCH_VERTEX_EMBED_DNS
+    endpoint_id_env: EVISEARCH_VERTEX_EMBED_ENDPOINT_ID
+    project_env: GOOGLE_CLOUD_PROJECT
+    location_env: EVISEARCH_VERTEX_EMBED_LOCATION
+    default_location: us-central1
+    timeout_s: 300
+
+models:
+  # ---- Local chat (vLLM) ----
+  qwen3.6-27b:
+    kind: chat
+    endpoint: vllm_chat
+    name: Qwen/Qwen3.6-27B
+    capabilities: {tools: true, json_schema: true, images: true, pdf: false}
+    context_tokens: 131072  # keep in step with max_model_len of the qwen36_27b server
+    thinking: false
+    # 16 px patches merged 2x2, no downscaling below 16.7M pixels (preprocessor_config.json); measured: a 1170x1566
+    # page is ~1,815 tokens.
+    image_tokens: {pixels_per_token: 32}
+  mistral-small-3.2-24b:
+    kind: chat
+    endpoint: vllm_chat_mistral
+    name: mistralai/Mistral-Small-3.2-24B-Instruct-2506
+    capabilities: {tools: true, json_schema: true, images: true, pdf: false}
+    context_tokens: 131072  # keep in step with max_model_len of the mistral_small_24b server
+    # No `thinking`: the model has no thinking mode, and vLLM rejects any chat_template_kwargs for Mistral tokenizers
+    # ("chat_template is not supported for Mistral tokenizers").
+    # Pixtral encoder (params.json vision_encoder): 14 px patches merged 2x2, images scaled down to fit 1540 px, and
+    # one [IMG_BREAK]/[IMG_END] token per row of patches. A 1224x1584 page (letter at scale 2) is 55 x (43 + 1) = 2,420.
+    image_tokens: {pixels_per_token: 28, max_side: 1540, row_break: true}
+  gemma4-31b-it:
+    kind: chat
+    endpoint: vllm_chat_gemma
+    name: google/gemma-4-31B-it
+    capabilities: {tools: true, json_schema: true, images: true, pdf: false}
+    context_tokens: 65536  # keep in step with max_model_len of the gemma4_31b server
+    thinking: false
+    image_tokens: {pixels_per_token: 32}
+  llama4-scout-w4a16:
+    kind: chat
+    endpoint: vllm_chat_llama4
+    name: RedHatAI/Llama-4-Scout-17B-16E-Instruct-quantized.w4a16
+    capabilities: {tools: true, json_schema: true, images: true, pdf: false}
+    context_tokens: 65536
+    thinking: false
+    image_tokens: {pixels_per_token: 28}
+  qwen3-8b:
+    kind: chat
+    endpoint: vllm_chat_small
+    name: Qwen/Qwen3-8B
+    capabilities: {tools: true, json_schema: true, images: false, pdf: false}
+    context_tokens: 32768
+    thinking: false
+
+  # ---- Local retrieval (vLLM) ----
+  qwen3-embedding-8b:
+    kind: embedding
+    endpoint: vllm_embed
+    name: Qwen/Qwen3-Embedding-8B
+    query_instruction: "Instruct: Given a question about a clinical trial publication, retrieve the document page that answers it\nQuery:"
+
+  qwen3-embedding-8b-vertex:
+    kind: embedding
+    endpoint: vertex_embedding
+    name: Qwen/Qwen3-Embedding-8B
+    query_instruction: "Instruct: Given a question about a clinical trial publication, retrieve the document page that answers it\nQuery:"
+  qwen3-reranker-8b:
+    kind: reranker
+    endpoint: vllm_rerank
+    name: Qwen/Qwen3-Reranker-8B
+
+  # ---- Serverless open-weight models (Novita / Together) ----
+  # No served id is written here on purpose. These providers' catalogs are theirs, not ours: ids are added, renamed and
+  # retired, and a guessed id fails at request time with a 404 that reads like an outage. Copy the id from the
+  # provider's own model list into EVISEARCH_NOVITA_MODEL / EVISEARCH_TOGETHER_MODEL (.env) and confirm it with
+  # `python -m src.config --check` before a run; until then these models refuse to be built.
+  #
+  # `capabilities` below is what the pipeline REQUIRES of the id you choose, not something the catalog knows about it:
+  #   tools        - Arm B and the reconciler are tool loops; a served id without tool calling cannot run them
+  #   json_schema  - Arm A and the structurer ask for response_format json_schema
+  #   images       - Arm A sends ~12 page images per call as base64 data URLs (see `-text` below if yours is text-only)
+  # There is also no way here to turn thinking off: openai_compat.py sends chat_template_kwargs only to local servers,
+  # so if the provider serves a thinking-mode id, its reasoning tokens are billed and decoded and nothing in this file
+  # stops that. Pick a non-thinking id, or an id the provider serves with thinking disabled.
+  novita-vlm:
+    kind: chat
+    endpoint: novita
+    name_env: EVISEARCH_NOVITA_MODEL
+    capabilities: {tools: true, json_schema: true, images: true, pdf: false}
+    # A claim about the id you choose, and the only guard against a request that is too long: the tool loop evicts old
+    # tool outputs against this number (tool_loop._fit_context). Providers often serve a shorter window than the 131072
+    # of the local server - if yours does, lower this or long papers will fail mid-run.
+    context_tokens: 131072
+    # No image_tokens: the default (32 px squares) is the local Qwen3.6 accounting and is only used for that eviction
+    # estimate. No price_per_1k: cost_usd() reports $0.00 for this model until the provider's prices are filled in,
+    # and there is no field for a cached-input rate.
+  novita-text:
+    # Same provider and env variable, for an id served WITHOUT image input: reconciliation drops page images on its own
+    # (capabilities.images is false), but Arm A needs EVISEARCH_PDF_QUERY_INPUT=markdown or the selection is rejected.
+    kind: chat
+    endpoint: novita
+    name_env: EVISEARCH_NOVITA_MODEL
+    capabilities: {tools: true, json_schema: true, images: false, pdf: false}
+    context_tokens: 131072
+  together-vlm:
+    kind: chat
+    endpoint: together
+    name_env: EVISEARCH_TOGETHER_MODEL
+    capabilities: {tools: true, json_schema: true, images: true, pdf: false}
+    context_tokens: 131072
+  together-text:
+    kind: chat
+    endpoint: together
+    name_env: EVISEARCH_TOGETHER_MODEL
+    capabilities: {tools: true, json_schema: true, images: false, pdf: false}
+    context_tokens: 131072
+
+  # ---- OpenRouter: the same open-weight models, hosted ----
+  # Qwen3.6-27B as served by OpenRouter's providers (fp8 on most). `reasoning: {enabled: false}` is the hosted form of
+  # thinking: false - without it the model reasons before every answer, which the pipeline neither expects nor pays for.
+  # require_parameters routes only to providers that honour every parameter sent (tools, response_format);
+  # data_collection: deny excludes providers that retain or train on prompts; sort: throughput sends each request to
+  # the provider currently decoding fastest instead of the cheapest (measured 2026-09-21: the cheapest provider decoded
+  # at 16 tok/s, and a reconciliation turn - the pipeline's critical path - is several sequential calls; median call
+  # time 13.4 s default vs 7.0 s sorted on a 15k-token prompt). context_tokens matches the local server, so the tool
+  # loops evict old pages at the same point they do locally (providers serve 262k).
+  qwen3.6-27b-openrouter:
+    kind: chat
+    endpoint: openrouter
+    name: qwen/qwen3.6-27b
+    capabilities: {tools: true, json_schema: true, images: true, pdf: false}
+    context_tokens: 131072
+    image_tokens: {pixels_per_token: 32}
+    price_per_1k: {input: 0.0003, output: 0.002}
+    extra_body: {reasoning: {enabled: false}, provider: {require_parameters: true, data_collection: deny, sort: throughput}}
+  qwen3-embedding-8b-openrouter:
+    kind: embedding
+    endpoint: openrouter
+    name: qwen/qwen3-embedding-8b
+    query_instruction: "Instruct: Given a question about a clinical trial publication, retrieve the document page that answers it\nQuery:"
+    price_per_1k: {input: 0.00001, output: 0.0}
+    extra_body: {provider: {data_collection: deny}}
+
+  # ---- Gemini (Vertex AI) ----
+  gemini-3.8-flash:
+    kind: chat
+    endpoint: vertex
+    name: gemini-3.8-flash
+    capabilities: {tools: true, json_schema: true, images: true, pdf: true}
+    context_tokens: 1048576
+    price_per_1k: {input: 0.00075, output: 0.00375}
+  gemini-3.5-flash:
+    kind: chat
+    endpoint: vertex
+    name: gemini-3.5-flash
+    capabilities: {tools: true, json_schema: true, images: true, pdf: true}
+    context_tokens: 1048576
+    price_per_1k: {input: 0.00075, output: 0.00375}
+  gemini-2.5-flash:
+    kind: chat
+    endpoint: vertex
+    name: gemini-2.5-flash
+    capabilities: {tools: true, json_schema: true, images: true, pdf: true}
+    context_tokens: 1048576
+    thinking: false  # same as the local models; Gemini 2.5 Pro cannot turn thinking off
+    price_per_1k: {input: 0.0003, output: 0.0025}
+  gemini-2.5-pro:
+    kind: chat
+    endpoint: vertex
+    name: gemini-2.5-pro
+    capabilities: {tools: true, json_schema: true, images: true, pdf: true}
+    context_tokens: 1048576
+    thinking: true
+    price_per_1k: {input: 0.00125, output: 0.01}
+  gemini-2.0-flash-001:
+    kind: chat
+    endpoint: vertex
+    name: gemini-2.0-flash-001
+    capabilities: {tools: true, json_schema: true, images: true, pdf: true}
+    context_tokens: 1048576
+    price_per_1k: {input: 0.00015, output: 0.0006}
+
+  # ---- OpenAI ----
+  gpt-5.6-luna:
+    kind: chat
+    endpoint: openai
+    name: gpt-5.6-luna
+    capabilities: {tools: true, json_schema: true, images: true, pdf: true}
+    context_tokens: 272000        # the model takes more, but above 272k input is billed at a higher rate
+    # Chat Completions rejects function tools on this family unless reasoning is off, so the client sends
+    # reasoning_effort: none and no temperature (the reasoning models reject temperature != 1).
+    reasoning_effort: none
+    image_tokens: {pixels_per_token: 29}   # 32px patches x 1.2
+    price_per_1k: {input: 0.0002, output: 0.0012}
+  gpt-4.1:
+    kind: chat
+    endpoint: openai
+    name: gpt-4.1
+    capabilities: {tools: true, json_schema: true, images: true, pdf: true}
+    context_tokens: 1047576
+    price_per_1k: {input: 0.002, output: 0.008}
+  gpt-4.1-mini:
+    kind: chat
+    endpoint: openai
+    name: gpt-4.1-mini
+    capabilities: {tools: true, json_schema: true, images: true, pdf: true}
+    context_tokens: 1047576
+    price_per_1k: {input: 0.0004, output: 0.0016}
+  gpt-4o:
+    kind: chat
+    endpoint: openai
+    name: gpt-4o
+    capabilities: {tools: true, json_schema: true, images: true, pdf: true}
+    context_tokens: 128000
+    price_per_1k: {input: 0.0025, output: 0.01}
+  text-embedding-3-large:
+    kind: embedding
+    endpoint: openai
+    name: text-embedding-3-large
+    price_per_1k: {input: 0.00013, output: 0.0}
+
+roles:
+  pdf_query:
+    kind: chat
+    requires: [json_schema]
+    description: Arm A - extracts a batch of columns from the whole document (parsed markdown, plus page images) in one call
+  search_agent:
+    kind: chat
+    requires: [tools]
+    description: Arm B - tool-using agent that searches pages and submits extractions
+  reconciliation:
+    kind: chat
+    requires: [tools]
+    description: Resolves Arm A vs Arm B per column by reading pages (and page images when supported)
+  qa:
+    kind: chat
+    description: Quick-mode question answering in the web app
+  judge:
+    kind: chat
+    requires: [json_schema]
+    description: evaluator_v2 - scores extractions against the gold table
+  baseline:
+    kind: chat
+    description: Default model for benchmark baselines (baseline scripts accept --model)
+  structurer:
+    kind: chat
+    requires: [json_schema]
+    description: Turns free-form baseline output into JSON (file-search free-form baseline)
+  embedding:
+    kind: embedding
+    description: Page embeddings behind the search_chunks tool
+  reranker:
+    kind: reranker
+    optional: true
+    description: Reorders embedding hits for search_chunks; null disables reranking
+
+servers:
+  # What each local vLLM process needs. Which GPUs it runs on is chosen in config.py (GPUS / GPU_POOL).
+  # Relative paths in args are resolved against the repository root.
+  qwen36_27b:
+    model_path_env: EVISEARCH_MODEL_PATH_QWEN36_27B
+    port: 8002
+    tensor_parallel: 1
+    # Memory reservation and sequence limits should be adjusted for the available local GPU.
+    gpu_memory_utilization: 0.60
+    max_model_len: 131072
+    max_num_seqs: 8
+    # --mamba-cache-mode all: Qwen3.6 is a hybrid (linear attention) model; the default "align" mode keeps a reusable
+    # prefix only where a scheduler step ends on a block boundary, so Arm A batches sharing a 75k-token document got no
+    # cache hits. "all" keeps one at every block, and later batches reuse the document.
+    args: [--dtype, bfloat16, --enable-auto-tool-choice, --tool-call-parser, qwen3_coder, --reasoning-parser, qwen3, --limit-mm-per-prompt, '{"image": 32}', --enable-prompt-tokens-details, --mamba-cache-mode, all]
+    env:
+      # FlashInfer's sampler JIT-compiles CUDA kernels at startup, which needs a full CUDA toolkit matching PyTorch;
+      # the pip CUDA wheels cannot link them. PyTorch's sampler needs no compilation.
+      VLLM_USE_FLASHINFER_SAMPLER: "0"
+  mistral_small_24b:
+    # Mistral-format weights only (consolidated.safetensors, params.json, tekken.json), hence the three mistral flags.
+    model_path_env: EVISEARCH_MODEL_PATH_MISTRAL_SMALL_24B
+    port: 8009
+    tensor_parallel: 1
+    # Memory reservation and sequence limits should be adjusted for the available local GPU.
+    gpu_memory_utilization: 0.60
+    max_model_len: 131072
+    max_num_seqs: 8
+    args: [--tokenizer-mode, mistral, --config-format, mistral, --load-format, mistral, --dtype, bfloat16, --enable-auto-tool-choice, --tool-call-parser, mistral, --limit-mm-per-prompt, '{"image": 32}', --enable-prompt-tokens-details]
+    env:
+      VLLM_USE_FLASHINFER_SAMPLER: "0"  # see qwen36_27b
+      # vLLM 0.29.0 cannot import its Pixtral model with transformers 5.17 (two removed names); the sitecustomize in
+      # this folder adds stand-ins in every server process. Relative paths are resolved against the repository root.
+      PYTHONPATH: src/inference/vllm_compat
+  gemma4_31b:
+    model_path_env: EVISEARCH_MODEL_PATH_GEMMA4_31B
+    port: 8010
+    tensor_parallel: 1
+    # Arm A uses markdown input on this model to keep its full-paper request within the available context.
+    gpu_memory_utilization: 0.78
+    max_model_len: 65536
+    max_num_seqs: 2
+    args: [--dtype, bfloat16, --enforce-eager, --enable-auto-tool-choice, --tool-call-parser, gemma4, --limit-mm-per-prompt, '{"image": 32}', --enable-prompt-tokens-details]
+    env:
+      VLLM_USE_FLASHINFER_SAMPLER: "0"
+  llama4_scout:
+    model_path_env: EVISEARCH_MODEL_PATH_LLAMA4_SCOUT
+    port: 8011
+    tensor_parallel: 1
+    gpu_memory_utilization: 0.78
+    max_model_len: 65536
+    max_num_seqs: 2
+    args: [--dtype, bfloat16, --enforce-eager, --enable-auto-tool-choice, --tool-call-parser, llama4_pythonic, --limit-mm-per-prompt, '{"image": 5}', --enable-prompt-tokens-details]
+    env:
+      VLLM_USE_FLASHINFER_SAMPLER: "0"
+  qwen3_8b:
+    model_path_env: EVISEARCH_MODEL_PATH_QWEN3_8B
+    port: 8006
+    tensor_parallel: 1
+    gpu_memory_utilization: 0.40
+    max_model_len: 32768
+    max_num_seqs: 16
+    args: [--dtype, bfloat16, --enable-auto-tool-choice, --tool-call-parser, hermes, --reasoning-parser, qwen3]
+    env:
+      VLLM_USE_FLASHINFER_SAMPLER: "0"  # see qwen36_27b
+  qwen3_embed_8b:
+    model_path_env: EVISEARCH_MODEL_PATH_QWEN3_EMBED_8B
+    port: 8005
+    tensor_parallel: 1
+    gpu_memory_utilization: 0.16  # 14.1 GiB weights + ~1.7 GiB overhead leave ~48k tokens of cache (>= max_model_len)
+    max_model_len: 32768
+    args: [--runner, pooling, --dtype, bfloat16]
+  qwen3_rerank_8b:
+    model_path_env: EVISEARCH_MODEL_PATH_QWEN3_RERANK_8B
+    port: 8004
+    tensor_parallel: 1
+    gpu_memory_utilization: 0.15  # 14.1 GiB weights + ~1.7 GiB overhead leave ~38k tokens of cache (>= max_model_len)
+    max_model_len: 16384
+    args: [--runner, pooling, --dtype, bfloat16, --hf-overrides, '{"architectures": ["Qwen3ForSequenceClassification"], "classifier_from_token": ["no", "yes"], "is_original_qwen3_reranker": true}', --chat-template, src/config/templates/qwen3_reranker.jinja]
+
+presets:
+  # Agents, retrieval and the parsed-markdown baseline (B1) on local GPUs; retrieval is embedding-only in every preset; the legacy LLM judge stays on
+  # Gemini. The PDF-upload baselines need a PDF-capable model: pass --model gemini-2.5-flash to those scripts.
+  local:
+    pdf_query: qwen3.6-27b
+    search_agent: qwen3.6-27b
+    reconciliation: qwen3.6-27b
+    qa: qwen3.6-27b
+    judge: gemini-2.5-flash
+    baseline: qwen3.6-27b
+    structurer: qwen3.6-27b
+    embedding: qwen3-embedding-8b
+    reranker: null
+  # `local` with the three agent stages moved to a serverless open-weight host, for concurrency the shared local GPU
+  # cannot give. Retrieval stays on the local GPU (same pages, same ranking as `local`, so a comparison changes one
+  # thing), and the judge stays where `local` has it. Before using either preset: set the API key and the model id
+  # (EVISEARCH_NOVITA_MODEL / EVISEARCH_TOGETHER_MODEL) from the provider's own catalog, then `python -m src.config
+  # --check`. Outputs will NOT reproduce local runs cell for cell even at temperature 0 (different hardware, kernels
+  # and possibly quantisation), so numbers from these presets are a separate arm, not a continuation of R1-R4.
+  # For a text-only served id, override the roles with the -text models and set EVISEARCH_PDF_QUERY_INPUT=markdown.
+  novita:
+    pdf_query: novita-vlm
+    search_agent: novita-vlm
+    reconciliation: novita-vlm
+    qa: novita-vlm
+    judge: gemini-2.5-flash
+    baseline: novita-vlm
+    structurer: novita-vlm
+    embedding: qwen3-embedding-8b
+    reranker: null
+  together:
+    pdf_query: together-vlm
+    search_agent: together-vlm
+    reconciliation: together-vlm
+    qa: together-vlm
+    judge: gemini-2.5-flash
+    baseline: together-vlm
+    structurer: together-vlm
+    embedding: qwen3-embedding-8b
+    reranker: null
+  # The same models as `local`, hosted by OpenRouter: no GPU needed, one key (OPEN_ROUTER_API_KEY). Page embeddings are
+  # cached under the hosted model's name, so they are computed once through the API and never mixed with local ones.
+  openrouter:
+    pdf_query: qwen3.6-27b-openrouter
+    search_agent: qwen3.6-27b-openrouter
+    reconciliation: qwen3.6-27b-openrouter
+    qa: qwen3.6-27b-openrouter
+    judge: qwen3.6-27b-openrouter
+    baseline: qwen3.6-27b-openrouter
+    structurer: qwen3.6-27b-openrouter
+    embedding: qwen3-embedding-8b-openrouter
+    reranker: null
+  # Everything on local GPUs; no cloud credentials needed.
+  offline:
+    pdf_query: qwen3.6-27b
+    search_agent: qwen3.6-27b
+    reconciliation: qwen3.6-27b
+    qa: qwen3.6-27b
+    judge: qwen3.6-27b
+    baseline: qwen3.6-27b
+    structurer: qwen3.6-27b
+    embedding: qwen3-embedding-8b
+    reranker: null
+  # Cloud APIs only (the setup the repository used before local models): Gemini agents, OpenAI embeddings.
+  cloud:
+    pdf_query: gemini-2.5-flash
+    search_agent: gemini-2.5-flash
+    reconciliation: gemini-2.5-flash
+    qa: gemini-2.5-flash
+    judge: gemini-2.5-flash
+    baseline: gemini-2.5-flash
+    structurer: gemini-2.5-flash
+    embedding: text-embedding-3-large
+    reranker: null
+  # The public demo (Fly has no GPU): one OPENAI_API_KEY covers chat and embeddings. Gemini 2.5 retires 2026-10-16,
+  # which falls inside the review period, so the demo does not use it.
+  cloud_openai:
+    pdf_query: gpt-5.6-luna
+    search_agent: gpt-5.6-luna
+    reconciliation: gpt-5.6-luna
+    qa: gpt-5.6-luna
+    judge: gpt-5.6-luna
+    baseline: gpt-5.6-luna
+    structurer: gpt-5.6-luna
+    embedding: text-embedding-3-large
+    reranker: null
+
+options:
+  # Enumerated knobs; config.py picks one value for each.
+  pdf_query_input: [markdown_images, markdown]  # markdown_images: each page's parsed text followed by its rendered image
+  reconciliation_page_images: [auto, never]
+  extraction_rules: [v2, v5, v4, v3, v1, none]  # column and trial conventions in the extraction prompts (src/evisearch/services/extraction_rules.py); none = E0 prompts
