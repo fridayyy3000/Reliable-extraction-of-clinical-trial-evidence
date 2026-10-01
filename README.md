@@ -58,8 +58,3 @@ Deterministic paper analysis is in `experiment-analysis/`. The paper-clustered b
 
 Prompt definitions are in `src/evisearch/services/`; the scoring rubric is `experiment-scripts/scoring/RUBRIC.md`. Run IDs and model settings for the completed journal experiments are documented in the parent repository's `analysis/journal/` records; generated manifests are intentionally not copied here.
 
-## Citation and License
-
-**Citation:** “Reliable extraction of clinical-trial evidence with provenance, verification, and targeted review.” Author list, venue, DOI, and publication metadata are pending maintainer input.
-
-**License:** No license is included. A maintainer must select and add an appropriate code/data license before redistribution. PDF redistribution has been confirmed by the repository owner; structured data terms still require review.
