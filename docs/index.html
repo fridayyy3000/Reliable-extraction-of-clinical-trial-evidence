@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Reliable extraction of clinical-trial evidence with provenance, verification, and targeted review.">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Reliable extraction of clinical-trial evidence">
+  <meta property="og:description" content="Structured clinical-trial evidence extraction with independent reconciliation, page-level verification, and targeted review.">
+  <meta property="og:image" content="./static/images/evisearch.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Reliable extraction of clinical-trial evidence">
+  <meta name="twitter:description" content="Structured clinical-trial evidence extraction with independent reconciliation, page-level verification, and targeted review.">
+  <meta name="twitter:image" content="./static/images/evisearch.jpg">
+  <meta name="theme-color" content="#ffffff">
+  <title>Reliable extraction of clinical-trial evidence</title>
+  <link rel="icon" type="image/svg+xml" href="./static/images/favicon.svg">
+  <link rel="stylesheet" href="./static/css/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#top">EviSearch · Journal Study</a>
+      <nav class="site-nav" aria-label="Page sections">
+        <a href="#abstract">Abstract</a>
+        <a href="#generalization">Cross-model results</a>
+        <a href="#provenance">Provenance</a>
+        <a href="#reproducibility">Reproducibility</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="hero-inner">
+        <p class="eyebrow">EviSearch · Clinical-trial evidence extraction</p>
+        <h1>Reliable extraction of clinical-trial evidence with provenance, verification, and targeted review</h1>
+        <!-- TODO_MANUSCRIPT_AUTHORS: Insert the author list and affiliations verbatim from the finalized manuscript. -->
+        <p class="authors">Author list and affiliations will be added from the finalized manuscript.</p>
+        <div class="button-row" aria-label="Project links">
+          <a class="paper-button" href="https://github.com/fridayyy3000/reliable-extraction-of-clinical-trial-evidence" aria-label="View source code on GitHub"><span class="button-mark" aria-hidden="true">{ }</span>Code</a>
+          <a class="paper-button secondary" href="https://github.com/fridayyy3000/reliable-extraction-of-clinical-trial-evidence/tree/main/dataset" aria-label="View benchmark data"><span class="button-mark" aria-hidden="true">D</span>Data</a>
+          <a class="paper-button secondary" href="./prompts.md" aria-label="Read production prompts"><span class="button-mark" aria-hidden="true">P</span>Prompts</a>
+          <!-- TODO_PREPRINT_URL: Add a Paper button when the manuscript/preprint URL is final. -->
+          <!-- TODO_PAPER_URL: Add a Paper PDF button only when the publication URL is confirmed. -->
+        </div>
+        <p class="hero-summary">EviSearch extracts structured clinical-trial evidence while retaining page-level provenance, checking cited claims independently, and using review signals to focus human attention.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="pipeline-heading">
+      <div class="section-head">
+        <p class="section-kicker">Method</p>
+        <h2 id="pipeline-heading">From publication to auditable evidence</h2>
+      </div>
+      <p class="reading">Independent extraction is followed by reconciliation and a separate page-level attribution check. The resulting table keeps each answer connected to its source.</p>
+      <figure class="pipeline-figure">
+        <img src="./static/images/evisearch.jpg" alt="EviSearch architecture: a trial-publication PDF is layout-parsed into page text, page images, and a retrieval index, then read by the PDF Query Agent (A), the Search Agent (B), and the Reconciliation Agent's independent extraction phase. Reconciliation adjudicates three candidates with the attribution verifier, Provenance gates admission, and outputs feed the evidence table and review triage; reviewer corrections update the curation knowledge used by every agent.">
+        <figcaption>EviSearch architecture, as used in the paper.</figcaption>
+      </figure>
+      <p class="flowline">Clinical-trial publication → Agent A + Agent B → independent reconciliation → attribution verification → structured clinical evidence → targeted review</p>
+      <div class="metrics-strip" aria-label="Benchmark dimensions">
+        <div class="metric"><strong>10</strong><span>publications</span></div>
+        <div class="metric"><strong>133</strong><span>schema fields per paper</span></div>
+        <div class="metric"><strong>4</strong><span>model families</span></div>
+        <div class="metric"><strong>1,330</strong><span>cells per model/system</span></div>
+      </div>
+    </section>
+
+    <section id="abstract" aria-labelledby="abstract-heading">
+      <div class="section-head">
+        <p class="section-kicker">Manuscript</p>
+        <h2 id="abstract-heading">Abstract</h2>
+      </div>
+      <!-- TODO_MANUSCRIPT_ABSTRACT: Insert the finalized manuscript abstract verbatim. -->
+      <p class="missing-material">The manuscript abstract was not present in the repository source material and is intentionally not reconstructed here.</p>
+    </section>
+
+    <section id="reference-benchmark" aria-labelledby="reference-heading">
+      <div class="section-head">
+        <p class="section-kicker">Reference benchmark</p>
+        <h2 id="reference-heading">Qwen benchmark performance</h2>
+      </div>
+      <p class="reading">Scores use the frozen correctness/completeness labels. Graded accuracy is the mean of correctness and completeness; a binary error is a cell that is not fully correct.</p>
+      <div class="table-scroll" role="region" aria-label="Qwen benchmark accuracy table" tabindex="0">
+        <table>
+          <caption>Qwen/Qwen3.6-27B · 1,330 cells per system</caption>
+          <thead><tr><th scope="col">System</th><th scope="col">Accuracy (%)</th><th scope="col">Correctness (%)</th><th scope="col">Completeness (%)</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">B1 single-pass</th><td>87.63</td><td>88.05</td><td>87.22</td></tr>
+            <tr><th scope="row">Agent A</th><td>89.14</td><td>89.62</td><td>88.65</td></tr>
+            <tr><th scope="row">Agent B</th><td>91.05</td><td>91.65</td><td>90.45</td></tr>
+            <tr><th scope="row">Full EviSearch</th><td>91.26</td><td>91.80</td><td>90.71</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="reading">For Qwen, full EviSearch exceeded B1 in 10/10 papers (+3.63 percentage points). The verifier checked 674/1,330 cells (50.68%); 658/674 checked cells were independently reproduced (97.63%, or 49.47% of all cells). The existing Qwen results contain no targeted-review simulation estimate.</p>
+    </section>
+
+    <section id="generalization" aria-labelledby="generalization-heading">
+      <div class="section-head">
+        <p class="section-kicker">Cross-model generalization</p>
+        <h2 id="generalization-heading">Performance varies across model families</h2>
+      </div>
+      <p class="reading">All systems use the same 10 publications and 133 fields per paper. EviSearch’s change from B1 is reported as a paired paper-level difference with the saved 95% confidence interval.</p>
+      <div class="table-scroll" role="region" aria-label="Cross-model benchmark results" tabindex="0">
+        <table>
+          <caption>Exact frozen summary values; accuracy and point differences are in percentage points</caption>
+          <thead><tr><th scope="col">Model</th><th scope="col">B1 accuracy</th><th scope="col">Agent A</th><th scope="col">Agent B</th><th scope="col">EviSearch</th><th scope="col">E − B1 pp (95% CI)</th><th scope="col">Papers E &gt; B1</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Qwen</th><td>87.63</td><td>89.14</td><td>91.05</td><td>91.26</td><td class="ci">+3.63 (2.88, 4.49)</td><td>10/10</td></tr>
+            <tr><th scope="row">Mistral</th><td>79.17</td><td>84.83</td><td>69.66</td><td>81.52</td><td class="ci">+2.35 (−1.54, 6.35)</td><td>6/10</td></tr>
+            <tr><th scope="row">Gemma</th><td>88.63</td><td>88.55</td><td>73.76</td><td>83.70</td><td class="ci">−4.92 (−8.53, −1.64)</td><td>3/10</td></tr>
+            <tr><th scope="row">Llama</th><td>76.65</td><td>82.69</td><td>49.77</td><td>77.61</td><td class="ci">+0.96 (−1.37, 3.12)</td><td>7/10</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-note">Point differences and confidence intervals match the paper's forest plot exactly, including the Gemma point estimate of −4.92 (the unrounded difference; the aggregate summary table elsewhere rounds this to −4.93).</p>
+      <figure class="result-figure">
+        <img src="./static/images/evisearch_forest_plot_ci_clean.png" alt="Forest plot of the paired EviSearch minus B1 accuracy difference in percentage points, with 95% confidence intervals, for Qwen (+3.63, 2.88 to 4.49), Mistral (+2.35, -1.54 to 6.35), Gemma (-4.92, -8.53 to -1.64), and Llama (+0.96, -1.37 to 3.12). A dashed vertical line marks zero effect.">
+        <figcaption>Forest plot as used in the paper. <a href="./static/images/evisearch_forest_plot_ci_clean.pdf">Download the source PDF.</a></figcaption>
+      </figure>
+    </section>
+
+    <section id="scoring" aria-labelledby="scoring-heading">
+      <div class="section-head">
+        <p class="section-kicker">Scoring</p>
+        <h2 id="scoring-heading">Correctness and completeness</h2>
+      </div>
+      <p class="reading">Graded accuracy is defined as (correctness + completeness) / 2. Reporting the components separately shows both whether the extracted values agree with the reference and whether required information is complete.</p>
+      <details>
+        <summary>Show correctness and completeness by model and system</summary>
+        <div class="table-scroll" role="region" aria-label="Correctness and completeness by system" tabindex="0">
+          <table>
+            <caption>Accuracy (correctness / completeness), percent</caption>
+            <thead><tr><th scope="col">Model</th><th scope="col">System</th><th scope="col">Accuracy</th><th scope="col">Correctness</th><th scope="col">Completeness</th></tr></thead>
+            <tbody>
+              <tr><th scope="rowgroup" rowspan="4">Qwen</th><td>B1</td><td>87.63</td><td>88.05</td><td>87.22</td></tr>
+              <tr><td>Agent A</td><td>89.14</td><td>89.62</td><td>88.65</td></tr><tr><td>Agent B</td><td>91.05</td><td>91.65</td><td>90.45</td></tr><tr><td>EviSearch</td><td>91.26</td><td>91.80</td><td>90.71</td></tr>
+              <tr><th scope="rowgroup" rowspan="4">Mistral</th><td>B1</td><td>79.17</td><td>80.41</td><td>77.93</td></tr>
+              <tr><td>Agent A</td><td>84.83</td><td>85.71</td><td>83.95</td></tr><tr><td>Agent B</td><td>69.66</td><td>70.19</td><td>69.14</td></tr><tr><td>EviSearch</td><td>81.52</td><td>81.84</td><td>81.20</td></tr>
+              <tr><th scope="rowgroup" rowspan="4">Gemma</th><td>B1</td><td>88.63</td><td>89.10</td><td>88.16</td></tr>
+              <tr><td>Agent A</td><td>88.55</td><td>88.83</td><td>88.27</td></tr><tr><td>Agent B</td><td>73.76</td><td>74.02</td><td>73.50</td></tr><tr><td>EviSearch</td><td>83.70</td><td>83.76</td><td>83.65</td></tr>
+              <tr><th scope="rowgroup" rowspan="4">Llama</th><td>B1</td><td>76.65</td><td>77.59</td><td>75.71</td></tr>
+              <tr><td>Agent A</td><td>82.69</td><td>83.68</td><td>81.69</td></tr><tr><td>Agent B</td><td>49.77</td><td>49.77</td><td>49.77</td></tr><tr><td>EviSearch</td><td>77.61</td><td>78.31</td><td>76.92</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+
+    <section id="review" aria-labelledby="review-heading">
+      <div class="section-head">
+        <p class="section-kicker">Targeted review</p>
+        <h2 id="review-heading">Disagreement marks higher-risk regions</h2>
+      </div>
+      <p class="reading">Agent A/B disagreement rates and EviSearch error rates are heterogeneous across families. Disagreement and review flags are signals for prioritizing inspection, not guarantees that a cell is wrong or correct.</p>
+      <div class="table-scroll" role="region" aria-label="Agreement, disagreement and review metrics" tabindex="0">
+        <table>
+          <caption>Frozen cross-model summary</caption>
+          <thead><tr><th scope="col">Model</th><th scope="col">A/B agree</th><th scope="col">A/B disagree</th><th scope="col">E error if agree</th><th scope="col">E error if disagree</th><th scope="col">Flagged</th><th scope="col">Review error recall</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Qwen</th><td>84.44%</td><td>15.56%</td><td>8.55%</td><td>25.60%</td><td>15.94%</td><td>38.93%</td></tr>
+            <tr><th scope="row">Mistral</th><td>59.70%</td><td>40.30%</td><td>11.59%</td><td>38.25%</td><td>43.31%</td><td>72.05%</td></tr>
+            <tr><th scope="row">Gemma</th><td>66.09%</td><td>33.91%</td><td>6.26%</td><td>41.46%</td><td>34.66%</td><td>79.34%</td></tr>
+            <tr><th scope="row">Llama</th><td>48.42%</td><td>51.58%</td><td>9.94%</td><td>40.09%</td><td>51.95%</td><td>81.12%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <figure class="result-figure">
+        <img src="./static/images/agreement_disagreement_story.jpg" alt="Panels A-E across Qwen, Mistral, Gemma, and Llama: (A) Agent A/B agreement rate and EviSearch accuracy/error when they agree; (B) disagreement rate and EviSearch accuracy/error when they disagree; (C) the flagged versus unflagged routing distribution; (D1) accuracy/error of flagged cells; (D2) accuracy/error of unflagged cells; (E) review error recall versus the share of errors found in disagreement cells.">
+        <figcaption>Agreement, disagreement, and targeted-review routing across all four model families, as used in the paper.</figcaption>
+      </figure>
+    </section>
+
+    <section id="provenance" aria-labelledby="provenance-heading">
+      <div class="section-head">
+        <p class="section-kicker">Evidence provenance</p>
+        <h2 id="provenance-heading">Coverage and independent reproduction are distinct</h2>
+      </div>
+      <p class="reading">Verifier coverage is the number of cells with at least one detailed saved check divided by all 1,330 cells. Reproduction is the number of checked cells marked verified divided by checked cells. Not every extracted cell was independently verified.</p>
+      <div class="table-scroll" role="region" aria-label="Verifier coverage and reproduction by model" tabindex="0">
+        <table>
+          <caption>Saved final cross-model provenance summary</caption>
+          <thead><tr><th scope="col">Model</th><th scope="col">Checked cells</th><th scope="col">Coverage</th><th scope="col">Reproduced / checked</th><th scope="col">Reproduction among checked</th><th scope="col">Reproduced / all cells</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Qwen</th><td>674 / 1,330</td><td>50.68%</td><td>658 / 674</td><td>97.63%</td><td>49.47%</td></tr>
+            <tr><th scope="row">Mistral</th><td>821 / 1,330</td><td>61.73%</td><td>681 / 821</td><td>82.95%</td><td>51.20%</td></tr>
+            <tr><th scope="row">Gemma</th><td>715 / 1,330</td><td>53.76%</td><td>584 / 715</td><td>81.68%</td><td>43.91%</td></tr>
+            <tr><th scope="row">Llama</th><td>0 / 1,330</td><td>0.00%</td><td>0 / 0</td><td>N/A</td><td>0.00%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Evidence modality</h3>
+      <div class="table-scroll" role="region" aria-label="Evidence-modality error rates" tabindex="0">
+        <table>
+          <thead><tr><th scope="col">Model</th><th scope="col">Text-associated error</th><th scope="col">Table-associated error</th><th scope="col">Figure-associated error</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Qwen</th><td>15.41% (80/519)</td><td>17.12% (25/146)</td><td>40.00% (6/15)</td></tr>
+            <tr><th scope="row">Mistral</th><td>23.26% (110/473)</td><td>37.69% (124/329)</td><td>56.38% (53/94)</td></tr>
+            <tr><th scope="row">Gemma</th><td>31.41% (196/624)</td><td>3.17% (2/63)</td><td>35.42% (17/48)</td></tr>
+            <tr><th scope="row">Llama</th><td>N/A</td><td>N/A</td><td>N/A</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <figure class="result-figure">
+        <img src="./static/images/evisearch_verifier.png" alt="Bar chart of verifier-checked cells versus independently verified cells for Qwen (674 checked, 658 verified), Mistral (821 checked, 681 verified), and Gemma (715 checked, 584 verified).">
+        <figcaption>Verifier coverage and independent reproduction, as used in the paper. <a href="./static/images/evisearch_verifier.pdf">Download the source PDF.</a></figcaption>
+      </figure>
+      <p class="small-note">Llama has no detailed verifier checks in the saved run and is omitted from this figure.</p>
+    </section>
+
+    <section id="method" aria-labelledby="method-heading">
+      <div class="section-head">
+        <p class="section-kicker">System</p>
+        <h2 id="method-heading">How EviSearch works</h2>
+      </div>
+      <div class="model-detail">
+        <div><h3>Agent A</h3><p>Reads the paper as a whole and extracts requested fields with page attribution.</p></div>
+        <div><h3>Agent B</h3><p>Searches retrieved page text for fields that remain uncertain or unanswered.</p></div>
+        <div><h3>Reconciliation</h3><p>Reads contested columns independently before seeing A/B candidates, then adjudicates the answers.</p></div>
+        <div><h3>Attribution verification</h3><p>A separate reading of cited pages attempts to reproduce each checked value and its evidence.</p></div>
+        <div><h3>Targeted review</h3><p>Disagreement and pipeline review flags prioritize cells for human inspection; neither signal guarantees correctness.</p></div>
+        <div><h3>Shared retrieval</h3><p>Qwen/Qwen3-Embedding-8B page embeddings, top-k 5, no reranker.</p></div>
+      </div>
+    </section>
+
+    <section id="reproducibility" aria-labelledby="reproducibility-heading">
+      <div class="section-head">
+        <p class="section-kicker">Reproducibility</p>
+        <h2 id="reproducibility-heading">Models and analysis</h2>
+      </div>
+      <div class="table-scroll" role="region" aria-label="Evaluated model identifiers" tabindex="0">
+        <table>
+          <thead><tr><th scope="col">Display family</th><th scope="col">Exact evaluated model</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Qwen</th><td>Qwen/Qwen3.6-27B</td></tr>
+            <tr><th scope="row">Mistral</th><td>mistralai/Mistral-Small-3.2-24B-Instruct-2506</td></tr>
+            <tr><th scope="row">Gemma</th><td>google/gemma-4-31B-it</td></tr>
+            <tr><th scope="row">Llama</th><td>RedHatAI/Llama-4-Scout-17B-16E-Instruct-quantized.w4a16</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul class="resource-list">
+        <li><a href="https://github.com/fridayyy3000/reliable-extraction-of-clinical-trial-evidence/blob/main/README.md">Repository README and setup</a></li>
+        <li><a href="https://github.com/fridayyy3000/reliable-extraction-of-clinical-trial-evidence/blob/main/REPRODUCIBILITY.md">Reproducibility guide</a></li>
+        <li><a href="./prompts.md">Exact production prompts and scoring rubric</a></li>
+        <li><a href="https://github.com/fridayyy3000/reliable-extraction-of-clinical-trial-evidence/tree/main/experiment-scripts">Pipeline and scoring scripts</a></li>
+        <li><a href="https://github.com/fridayyy3000/reliable-extraction-of-clinical-trial-evidence/tree/main/experiment-analysis">Analysis scripts</a></li>
+        <li><a href="https://github.com/fridayyy3000/reliable-extraction-of-clinical-trial-evidence/tree/main/analysis/journal">Canonical data and confidence-interval code</a></li>
+        <li><a href="https://github.com/fridayyy3000/reliable-extraction-of-clinical-trial-evidence/tree/main/new_pipeline_outputs/benchmark_runs">Final run headers</a></li>
+      </ul>
+      <p class="small-note">The table values above are from saved fixed-judge reports and the saved paper-clustered bootstrap. Reproducing confidence intervals uses 10,000 paper-level resamples (10 papers with replacement, all 133 cells retained), seed 20260927. No cells are resampled independently.</p>
+    </section>
+
+    <section id="data-availability" aria-labelledby="data-heading">
+      <div class="section-head">
+        <p class="section-kicker">Availability</p>
+        <h2 id="data-heading">Data and code</h2>
+      </div>
+      <p class="reading">The repository dataset includes the benchmark annotations, document list, and 26 source PDFs; the repository owner has confirmed PDF redistribution rights. Structured annotations and extracted quotations may have separate rights terms. The final run outputs and scoring labels are not included in the public-release staging copy.</p>
+      <p class="reading">Code and prompt definitions are in the linked repository. The formal manuscript data-availability statement and publication details were not present in the available source bundle.</p>
+    </section>
+
+    <section id="bibtex" aria-labelledby="bibtex-heading">
+      <div class="section-head">
+        <p class="section-kicker">Citation</p>
+        <h2 id="bibtex-heading">BibTeX</h2>
+      </div>
+      <!-- TODO_BIBTEX: Add verified authors, venue, year, DOI, and preprint URL from the final manuscript. -->
+      <p class="missing-material">A BibTeX entry will be added when the manuscript’s authors and publication metadata are finalized. No DOI or author list is inferred here.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <p>Project page for <em>Reliable extraction of clinical-trial evidence with provenance, verification, and targeted review</em>.</p>
+      <p>Page structure acknowledges the <a href="https://github.com/eliahuhorwitz/Academic-project-page-template">Academic Project Page Template</a> (CC BY-SA 4.0) and the <a href="https://nerfies.github.io/">Nerfies</a> academic project page design reference.</p>
+      <p>No analytics or tracking scripts are included.</p>
+    </div>
+  </footer>
+</body>
+</html>

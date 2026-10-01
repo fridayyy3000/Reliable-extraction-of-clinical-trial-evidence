@@ -8,7 +8,7 @@ EviSearch builds structured clinical-trial evidence tables from research papers.
 
 This staging folder contains pipeline and analysis source, requirements, prompt/rubric source, the locked mHSPC schema, frozen knowledge notes, static GitHub Pages files, and an **exact copy of the repository's `dataset/` directory**.
 
-The dataset copy has 30 files, including all 26 source PDFs. The source/staging files were verified identical. PDF and structured-annotation redistribution rights are not confirmed; do not publish this folder until those rights are cleared.
+The dataset copy has 30 files, including all 26 source PDFs. The source/staging files were verified identical. The repository owner has confirmed that redistribution rights for these PDFs are cleared. Structured gold annotations and extracted quotations may have separate terms and should be reviewed before release.
 
 Not included: generated inference/results, final run manifests, scoring labels or queues, raw model responses, overnight/server logs, caches, embeddings, feedback, tests, the Flask web demo, and deployment configuration.
 
@@ -58,14 +58,16 @@ Deterministic paper analysis is in `experiment-analysis/`. The paper-clustered b
 
 Prompt definitions are in `src/evisearch/services/`; the scoring rubric is `experiment-scripts/scoring/RUBRIC.md`. Run IDs and model settings for the completed journal experiments are documented in the parent repository's `analysis/journal/` records; generated manifests are intentionally not copied here.
 
-## GitHub Pages
+## Project Website
 
-`index.html` and `.nojekyll` are the static project-page files. Configure GitHub Pages to publish the repository root (or copy these files to the root of the Pages branch). Pages does not run the Flask demo; the interactive app/backend is not included here.
+`docs/` is a standalone academic project page for this paper — a plain HTML/CSS site, built from this repository's own benchmark results and figures. It is a separate site from the main EviSearch project/website; it is not published to and does not replace that project's page.
+
+To publish it, set this repository's GitHub Pages source to the `main` branch, `/docs` folder. `docs/.nojekyll` disables Jekyll processing so the static files are served as-is. Pages does not run the Flask demo; the interactive app/backend is not included here.
 
 ## Citation and License
 
 **Citation:** “Reliable extraction of clinical-trial evidence with provenance, verification, and targeted review.” Author list, venue, DOI, and publication metadata are pending maintainer input.
 
-**License:** No license is included. A maintainer must select and add an appropriate code/data license before redistribution. Do not publish until license and dataset/PDF rights are confirmed.
+**License:** No license is included. A maintainer must select and add an appropriate code/data license before redistribution. PDF redistribution has been confirmed by the repository owner; structured data terms still require review.
 
-Project website: <https://coral-lab-asu.github.io/EviSearch/>
+Project website (this paper only, separate from the main EviSearch project): <https://fridayyy3000.github.io/reliable-extraction-of-clinical-trial-evidence/> (to be enabled after repository review).
